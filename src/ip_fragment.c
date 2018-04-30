@@ -105,7 +105,7 @@ static unsigned int time0;
 static struct timer_list *timer_head = 0, *timer_tail = 0;
 
 #define int_ntoa(x)	inet_ntoa(*((struct in_addr *)&x))
-
+// 获取当前微秒
 static int
 jiffies()
 {
@@ -146,6 +146,7 @@ panic(char *str)
   exit(1);
 }
 
+// 将x插入timer_list双向链表的尾部
 static void
 add_timer(struct timer_list * x)
 {
@@ -162,6 +163,7 @@ add_timer(struct timer_list * x)
   }
 }
 
+// 从timer_list双向链表删除x
 static void
 del_timer(struct timer_list * x)
 {
@@ -179,7 +181,7 @@ static void
 frag_kfree_skb(struct sk_buff * skb, int type)
 {
   if (this_host)
-    atomic_sub(skb->truesize, &this_host->ip_frag_mem);
+    atomic_sub(skb->truesize, &this_host->ip_frag_mem); // 更新this_host->ip_frag_mem
   kfree_skb(skb, type);
 }
 
@@ -187,7 +189,7 @@ static void
 frag_kfree_s(void *ptr, int len)
 {
   if (this_host)
-    atomic_sub(len, &this_host->ip_frag_mem);
+    atomic_sub(len, &this_host->ip_frag_mem); // 更新this_host->ip_frag_mem
   free(ptr);
 }
 
@@ -198,7 +200,7 @@ frag_kmalloc(int size, int dummy)
   (void)dummy;
   if (!vp)
     return NULL;
-  atomic_add(size, &this_host->ip_frag_mem);
+  atomic_add(size, &this_host->ip_frag_mem); // 更新this_host->ip_frag_mem
   
   return vp;
 }
@@ -229,7 +231,7 @@ ip_frag_create(int offset, int end, struct sk_buff * skb, unsigned char *ptr)
   
   return (fp);
 }
-
+// 按目的ip哈希
 static int
 frag_index(struct ip * iph)
 {
@@ -237,11 +239,11 @@ frag_index(struct ip * iph)
 
   return (ip % hash_size);
 }
-
+// 查找iph对应的hostfrags，若找到则将this_host指向它
 static int
 hostfrag_find(struct ip * iph)
 {
-  int hash_index = frag_index(iph);
+  int hash_index = frag_index(iph); // 按目的ip哈希
   struct hostfrags *hf;
   
   this_host = 0;
@@ -256,14 +258,15 @@ hostfrag_find(struct ip * iph)
     return 1;
 }
 
+// 创建hostfrags，插入fragtable[hash_index]，将this_host指向它
 static void
 hostfrag_create(struct ip * iph)
 {
   struct hostfrags *hf = mknew(struct hostfrags);
-  int hash_index = frag_index(iph);
+  int hash_index = frag_index(iph); // 按目的ip哈希
 
   hf->prev = 0;
-  hf->next = fragtable[hash_index];
+  hf->next = fragtable[hash_index]; // 插入头部
   if (hf->next)
     hf->next->prev = hf;
   fragtable[hash_index] = hf;
@@ -274,6 +277,7 @@ hostfrag_create(struct ip * iph)
   this_host = hf;
 }
 
+// 从hostfrags链表中删除this_host
 static void
 rmthis_host()
 {
@@ -298,7 +302,7 @@ rmthis_host()
   IP datagram, and return the queue entry address if found.
 */
 static struct ipq *
-ip_find(struct ip * iph)
+ip_find(struct ip * iph) // 根据ip_id、ip_src、ip_dst、ip_p查找ipq
 {
   struct ipq *qp;
   struct ipq *qplast;
@@ -310,7 +314,7 @@ ip_find(struct ip * iph)
 	iph->ip_dst.s_addr == qp->iph->ip_dst.s_addr &&
 	iph->ip_p == qp->iph->ip_p) {
       del_timer(&qp->timer);	/* So it doesn't vanish on us. The timer will
-				   be reset anyway */
+				   be reset anyway */ // 此处删除计时器，后面会再插入
       return (qp);
     }
   }
@@ -323,21 +327,21 @@ ip_find(struct ip * iph)
   timed out.
 */
 static void
-ip_free(struct ipq * qp)
+ip_free(struct ipq * qp) // 释放ipq及其ipfrag链表，如果需要释放对应的hostfrags
 {
   struct ipfrag *fp;
   struct ipfrag *xp;
 
   /* Stop the timer for this entry. */
-  del_timer(&qp->timer);
+  del_timer(&qp->timer);  // 清理对应的计时器，从timer_list双向链表中删除
   
   /* Remove this entry from the "incomplete datagrams" queue. */
-  if (qp->prev == NULL) {
+  if (qp->prev == NULL) {  // 从ipq链表中摘除
     this_host->ipqueue = qp->next;
     if (this_host->ipqueue != NULL)
       this_host->ipqueue->prev = NULL;
     else
-      rmthis_host();
+      rmthis_host();  // 如果this_host->ipqueue为空，从hostfrags链表中删除this_host
   }
   else {
     qp->prev->next = qp->next;
@@ -345,7 +349,7 @@ ip_free(struct ipq * qp)
       qp->next->prev = qp->prev;
   }
   /* Release all fragment data. */
-  fp = qp->fragments;
+  fp = qp->fragments; // 释放qp的ipfrag链表
   while (fp != NULL) {
     xp = fp->next;
     frag_kfree_skb(fp->skb, FREE_READ);
@@ -353,7 +357,7 @@ ip_free(struct ipq * qp)
     fp = xp;
   }
   /* Release the IP header. */
-  frag_kfree_s(qp->iph, 64 + 8);
+  frag_kfree_s(qp->iph, 64 + 8); // 创建qp时，iph分配了64+8字节数
   
   /* Finally, release the queue descriptor itself. */
   frag_kfree_s(qp, sizeof(struct ipq));
@@ -376,13 +380,13 @@ ip_expire(unsigned long arg)
   queue until we are back under the low threshold.
 */
 static void
-ip_evictor(void)
+ip_evictor(void) // oldest??
 {
   // fprintf(stderr, "ip_evict:numpack=%i\n", numpack);
   while (this_host && this_host->ip_frag_mem > IPFRAG_LOW_THRESH) {
     if (!this_host->ipqueue)
       panic("ip_evictor: memcount");
-    ip_free(this_host->ipqueue);
+    ip_free(this_host->ipqueue); // 释放ipq及其ipfrag链表，如果需要释放对应的hostfrags，直到内存使用达到合理值
   }
 }
 
@@ -408,14 +412,14 @@ ip_create(struct ip * iph)
   
   /* Allocate memory for the IP header (plus 8 octets for ICMP). */
   ihlen = iph->ip_hl * 4;
-  qp->iph = (struct ip *) frag_kmalloc(64 + 8, GFP_ATOMIC);
+  qp->iph = (struct ip *) frag_kmalloc(64 + 8, GFP_ATOMIC); // 分配ip首部存储空间
   if (qp->iph == NULL) {
     //NETDEBUG(printk("IP: create: no memory left !\n"));
     nids_params.no_mem("ip_create");
     frag_kfree_s(qp, sizeof(struct ipq));
     return (NULL);
   }
-  memcpy(qp->iph, iph, ihlen + 8);
+  memcpy(qp->iph, iph, ihlen + 8); // 保存ip首部信息
   qp->len = 0;
   qp->ihlen = ihlen;
   qp->fragments = NULL;
@@ -425,10 +429,10 @@ ip_create(struct ip * iph)
   qp->timer.expires = jiffies() + IP_FRAG_TIME;	/* about 30 seconds     */
   qp->timer.data = (unsigned long) qp;	/* pointer to queue     */
   qp->timer.function = ip_expire;	/* expire function      */
-  add_timer(&qp->timer);
+  add_timer(&qp->timer); // 插入timer_list双向链表的尾部
 
   /* Add this entry to the queue. */
-  qp->prev = NULL;
+  qp->prev = NULL; // 插入hostfrags头部
   qp->next = this_host->ipqueue;
   if (qp->next != NULL)
     qp->next->prev = qp;
@@ -445,14 +449,14 @@ ip_done(struct ipq * qp)
   int offset;
   
   /* Only possible if we received the final fragment. */
-  if (qp->len == 0)
+  if (qp->len == 0) // 在接收到最后一个分片时才设置qp->len
     return (0);
   
   /* Check all fragment offsets to see if they connect. */
   fp = qp->fragments;
   offset = 0;
   while (fp != NULL) {
-    if (fp->offset > offset)
+    if (fp->offset > offset) // 有间隔，表示还没有集齐
       return (0);		/* fragment(s) missing */
     offset = fp->end;
     fp = fp->next;
@@ -479,7 +483,7 @@ ip_glue(struct ipq * qp)
   int count, len;
 
   /* Allocate a new buffer for the datagram. */
-  len = qp->ihlen + qp->len;
+  len = qp->ihlen + qp->len; // 首部长度 + 数据长度
   
   if (len > 65535) {
     // NETDEBUG(printk("Oversized IP packet from %s.\n", int_ntoa(qp->iph->ip_src.s_addr)));
@@ -487,7 +491,7 @@ ip_glue(struct ipq * qp)
     ip_free(qp);
     return NULL;
   }
-  if ((skb = (char *) malloc(len)) == NULL) {
+  if ((skb = (char *) malloc(len)) == NULL) { // 分配新的空间存储完整ip包
     // NETDEBUG(printk("IP: queue_glue: no memory for gluing queue %p\n", qp));
     nids_params.no_mem("ip_glue");
     ip_free(qp);
@@ -495,9 +499,9 @@ ip_glue(struct ipq * qp)
   }
   /* Fill in the basic details. */
   ptr = (unsigned char *)skb;
-  memcpy(ptr, ((unsigned char *) qp->iph), qp->ihlen);
+  memcpy(ptr, ((unsigned char *) qp->iph), qp->ihlen); // 拷贝首部信息
   ptr += qp->ihlen;
-  count = 0;
+  count = 0; // 数据字节计数
 
   /* Copy the data portions of all fragments into the new buffer. */
   fp = qp->fragments;
@@ -511,17 +515,17 @@ ip_glue(struct ipq * qp)
       free(skb);
       return NULL;
     }
-    memcpy((ptr + fp->offset), fp->ptr, fp->len);
+    memcpy((ptr + fp->offset), fp->ptr, fp->len); // 拷贝每个分片的数据信息
     count += fp->len;
     fp = fp->next;
   }
   /* We glued together all fragments, so remove the queue entry. */
-  ip_free(qp);
+  ip_free(qp); // 已组装完成，释放重组过程中的分片数据结构
 
   /* Done with all fragments. Fixup the new IP header. */
   iph = (struct ip *) skb;
-  iph->ip_off = 0;
-  iph->ip_len = htons((iph->ip_hl * 4) + count);
+  iph->ip_off = 0; // 填充分片信息
+  iph->ip_len = htons((iph->ip_hl * 4) + count); // 填充长度信息
   // skb->ip_hdr = iph;
 
   return (skb);
@@ -529,7 +533,7 @@ ip_glue(struct ipq * qp)
 
 /* Process an incoming IP datagram fragment. */
 static char *
-ip_defrag(struct ip *iph, struct sk_buff *skb)
+ip_defrag(struct ip *iph, struct sk_buff *skb) // ip分片重组函数
 {
   struct ipfrag *prev, *next, *tmp;
   struct ipfrag *tfp;
@@ -539,25 +543,25 @@ ip_defrag(struct ip *iph, struct sk_buff *skb)
   int flags, offset;
   int i, ihl, end;
 
-  if (!hostfrag_find(iph) && skb)
-    hostfrag_create(iph);
+  if (!hostfrag_find(iph) && skb) // 查找iph对应的hostfrags，若找到则将this_host指向它；若skb为空，说明不需要进行分片重组
+    hostfrag_create(iph);  // 创建hostfrags，插入fragtable[hash_index]，将this_host指向它
 
   /* Start by cleaning up the memory. */
   if (this_host)
     if (this_host->ip_frag_mem > IPFRAG_HIGH_THRESH)
-      ip_evictor();
+      ip_evictor(); // 释放ipq及其ipfrag链表，如果需要释放对应的hostfrags，直到内存使用达到合理值
   
   /* Find the entry of this IP datagram in the "incomplete datagrams" queue. */
   if (this_host)
-    qp = ip_find(iph);
+    qp = ip_find(iph); // 根据ip_id、ip_src、ip_dst、ip_p查找ipq
   else
     qp = 0;
 
   /* Is this a non-fragmented datagram? */
   offset = ntohs(iph->ip_off);
-  flags = offset & ~IP_OFFSET;
-  offset &= IP_OFFSET;
-  if (((flags & IP_MF) == 0) && (offset == 0)) {
+  flags = offset & ~IP_OFFSET; // 标记位
+  offset &= IP_OFFSET; // 片偏移
+  if (((flags & IP_MF) == 0) && (offset == 0)) { // 假分片，直接返回
     if (qp != NULL)
       ip_free(qp);		/* Fragmented frame replaced by full
 				   unfragmented copy */
@@ -566,10 +570,10 @@ ip_defrag(struct ip *iph, struct sk_buff *skb)
 
   /* ip_evictor() could have removed all queues for the current host */
   if (!this_host)
-    hostfrag_create(iph);
+    hostfrag_create(iph); // 创建hostfrags，插入fragtable[hash_index]，将this_host指向它
 
   offset <<= 3;			/* offset is in 8-byte chunks */
-  ihl = iph->ip_hl * 4;
+  ihl = iph->ip_hl * 4; // 首部长度
 
   /*
     If the queue already existed, keep restarting its timer as long as
@@ -579,25 +583,25 @@ ip_defrag(struct ip *iph, struct sk_buff *skb)
   if (qp != NULL) {
     /* ANK. If the first fragment is received, we should remember the correct
        IP header (with options) */
-    if (offset == 0) {
+    if (offset == 0) { // 第一个分片，保存首部信息
       qp->ihlen = ihl;
       memcpy(qp->iph, iph, ihl + 8);
     }
-    del_timer(&qp->timer);
+    del_timer(&qp->timer);  // 刷新timer，从timer_list双向链表删除x
     qp->timer.expires = jiffies() + IP_FRAG_TIME;	/* about 30 seconds */
     qp->timer.data = (unsigned long) qp;	/* pointer to queue */
     qp->timer.function = ip_expire;	/* expire function */
-    add_timer(&qp->timer);
+    add_timer(&qp->timer);// 将x插入timer_list双向链表的尾部
   }
   else {
     /* If we failed to create it, then discard the frame. */
-    if ((qp = ip_create(iph)) == NULL) {
+    if ((qp = ip_create(iph)) == NULL) { // 创建ipq
       kfree_skb(skb, FREE_READ);
       return NULL;
     }
   }
   /* Attempt to construct an oversize packet. */
-  if (ntohs(iph->ip_len) + (int) offset > 65535) {
+  if (ntohs(iph->ip_len) + (int) offset > 65535) { // 长度超长
     // NETDEBUG(printk("Oversized packet received from %s\n", int_ntoa(iph->ip_src.s_addr)));
     nids_params.syslog(NIDS_WARN_IP, NIDS_WARN_IP_OVERSIZED, iph, 0);
     kfree_skb(skb, FREE_READ);
@@ -610,7 +614,7 @@ ip_defrag(struct ip *iph, struct sk_buff *skb)
   ptr = (unsigned char *)(skb->data + ihl);
 
   /* Is this the final fragment? */
-  if ((flags & IP_MF) == 0)
+  if ((flags & IP_MF) == 0) // 最后一个分片，设置qp->len
     qp->len = end;
 
   /*
@@ -619,7 +623,7 @@ ip_defrag(struct ip *iph, struct sk_buff *skb)
     fragment, right?
   */
   prev = NULL;
-  for (next = qp->fragments; next != NULL; next = next->next) {
+  for (next = qp->fragments; next != NULL; next = next->next) {  // 找到分片插入位置
     if (next->offset >= offset)
       break;			/* bingo! */
     prev = next;
@@ -629,7 +633,7 @@ ip_defrag(struct ip *iph, struct sk_buff *skb)
     fragment, and, if needed, align things so that any overlaps are
     eliminated.
   */
-  if (prev != NULL && offset < prev->end) {
+  if (prev != NULL && offset < prev->end) {  // 处理与前一个分片的重叠部分
     nids_params.syslog(NIDS_WARN_IP, NIDS_WARN_IP_OVERLAP, iph, 0);
     i = prev->end - offset;
     offset += i;		/* ptr into datagram */
@@ -639,10 +643,10 @@ ip_defrag(struct ip *iph, struct sk_buff *skb)
     Look for overlap with succeeding segments.
     If we can merge fragments, do it.
   */
-  for (tmp = next; tmp != NULL; tmp = tfp) {
+  for (tmp = next; tmp != NULL; tmp = tfp) {  // 处理与后一个分片的重叠部分
     tfp = tmp->next;
     if (tmp->offset >= end)
-      break;			/* no overlaps at all */
+      break;			/* no overlaps at all */ // 没有重叠
     nids_params.syslog(NIDS_WARN_IP, NIDS_WARN_IP_OVERLAP, iph, 0);
     
     i = end - next->offset;	/* overlap is 'i' bytes */
@@ -654,7 +658,7 @@ ip_defrag(struct ip *iph, struct sk_buff *skb)
       goes with. We never throw the new frag away, so the frag being
       dumped has always been charged for.
     */
-    if (tmp->len <= 0) {
+    if (tmp->len <= 0) { // 后一个分片被完全覆盖，丢弃
       if (tmp->prev != NULL)
 	tmp->prev->next = tmp->next;
       else
@@ -671,7 +675,7 @@ ip_defrag(struct ip *iph, struct sk_buff *skb)
   }
   /* Insert this fragment in the chain of fragments. */
   tfp = NULL;
-  tfp = ip_frag_create(offset, end, skb, ptr);
+  tfp = ip_frag_create(offset, end, skb, ptr); /* Create a new fragment entry. */
   
   /*
     No memory to save the fragment - so throw the lot. If we failed
@@ -683,7 +687,7 @@ ip_defrag(struct ip *iph, struct sk_buff *skb)
     return NULL;
   }
   /* From now on our buffer is charged to the queues. */
-  tfp->prev = prev;
+  tfp->prev = prev; // 插入ipfrag链表
   tfp->next = next;
   if (prev != NULL)
     prev->next = tfp;
@@ -698,7 +702,7 @@ ip_defrag(struct ip *iph, struct sk_buff *skb)
     now have a full IP datagram which we can bump up to the IP
     layer...
   */
-  if (ip_done(qp)) {
+  if (ip_done(qp)) { // 判断分片是否集齐
     skb2 = ip_glue(qp);		/* glue together the fragments */
     return (skb2);
   }
@@ -713,46 +717,48 @@ ip_defrag_stub(struct ip *iph, struct ip **defrag)
 
   numpack++;
   timenow = 0;
-  while (timer_head && timer_head->expires < jiffies()) {
+  while (timer_head && timer_head->expires < jiffies()) { // 处理超时分片，头部是最旧的
     this_host = ((struct ipq *) (timer_head->data))->hf;
-    timer_head->function(timer_head->data);
+    timer_head->function(timer_head->data); // function是ip_expire，释放对应的ipq
   }
   offset = ntohs(iph->ip_off);
-  flags = offset & ~IP_OFFSET;
-  offset &= IP_OFFSET;
-  if (((flags & IP_MF) == 0) && (offset == 0)) {
+  flags = offset & ~IP_OFFSET; // 标志位
+  offset &= IP_OFFSET; // 片偏移
+  if (((flags & IP_MF) == 0) && (offset == 0)) { // 假分片，本身是完整的ip包，返回
     ip_defrag(iph, 0);
     return IPF_NOTF;
   }
   tot_len = ntohs(iph->ip_len);
-  skb = (struct sk_buff *) malloc(tot_len + sizeof(struct sk_buff));
+  skb = (struct sk_buff *) malloc(tot_len + sizeof(struct sk_buff)); // 分配空间，用于缓存分片
   if (!skb)
       nids_params.no_mem("ip_defrag_stub");
   skb->data = (char *) (skb + 1);
   memcpy(skb->data, iph, tot_len);
-  skb->truesize = tot_len + 16 + nids_params.dev_addon;
-  skb->truesize = (skb->truesize + 15) & ~15;
-  skb->truesize += nids_params.sk_buff_size;
+  skb->truesize = tot_len + 16 + nids_params.dev_addon;  // ??
+  skb->truesize = (skb->truesize + 15) & ~15; // 对齐
+  skb->truesize += nids_params.sk_buff_size; // 加上sk_buff本身的大小
 
-  if ((*defrag = (struct ip *)ip_defrag((struct ip *) (skb->data), skb)))
-    return IPF_NEW;
+  if ((*defrag = (struct ip *)ip_defrag((struct ip *) (skb->data), skb)))  // 已拼接完成一个ip包，返回
+    return IPF_NEW;  // 这里返回的*defrag需要显式释放
 
-  return IPF_ISF;
+  return IPF_ISF; // 需要等待后续分片
 }
 
+// 初始化fragtable
+// n：fragtable长度
 void
 ip_frag_init(int n)
 {
   struct timeval tv;
 
   gettimeofday(&tv, 0);
-  time0 = tv.tv_sec;
+  time0 = tv.tv_sec; // ?
   fragtable = (struct hostfrags **) calloc(n, sizeof(struct hostfrags *));
   if (!fragtable)
     nids_params.no_mem("ip_frag_init");
   hash_size = n;
 }
-
+// 释放fragtable
 void
 ip_frag_exit(void)
 {

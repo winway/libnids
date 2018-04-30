@@ -237,11 +237,13 @@ void nids_pcap_handler(u_char * par, struct pcap_pkthdr *hdr, u_char * data)
      * otherwise nids_tcp_timeouts is always NULL.
      */
     if (NULL != nids_tcp_timeouts)
-      tcp_check_timeouts(&hdr->ts);
+      tcp_check_timeouts(&hdr->ts);  // 清理nids_tcp_timeouts链表中超时的tcp_stream，这里的超时指的是closing阶段的超时
 
     nids_last_pcap_header = hdr;
     nids_last_pcap_data = data;
     (void)par; /* warnings... */
+
+    // 根据数据内容再次设置nids_linkoffset，并判断hdr->caplen是否大于nids_linkoffset
     switch (linktype) {
     case DLT_EN10MB:
 	if (hdr->caplen < 14)
@@ -320,13 +322,13 @@ void nids_pcap_handler(u_char * par, struct pcap_pkthdr *hdr, u_char * data)
 * handle->offset in pcap sources), so memcpy should not be called.
 */
 #ifdef LBL_ALIGN
-    if ((unsigned long) (data + nids_linkoffset) & 0x3) {
-	data_aligned = alloca(hdr->caplen - nids_linkoffset + 4);
-	data_aligned -= (unsigned long) data_aligned % 4;
-	memcpy(data_aligned, data + nids_linkoffset, hdr->caplen - nids_linkoffset);
+    if ((unsigned long) (data + nids_linkoffset) & 0x3) { // 判断是否被4整除，即是否按4字节对齐
+	data_aligned = alloca(hdr->caplen - nids_linkoffset + 4); // 在调用 alloca的函数返回的时候, 它分配的内存会自动释放。也就是说, 用 alloca 分配的内存在栈上。
+	data_aligned -= (unsigned long) data_aligned % 4; // 按4字节对齐
+	memcpy(data_aligned, data + nids_linkoffset, hdr->caplen - nids_linkoffset); // 拷贝数据到对齐的地址
     } else 
 #endif
-  data_aligned = data + nids_linkoffset;
+  data_aligned = data + nids_linkoffset; // data_aligned有可能是alloca分配的栈空间或者是底层pcap维护的空间
 
  #ifdef HAVE_LIBGTHREAD_2_0
      if(nids_params.multiproc) { 
@@ -355,11 +357,11 @@ void nids_pcap_handler(u_char * par, struct pcap_pkthdr *hdr, u_char * data)
         call_ip_frag_procs(data_aligned,hdr->caplen - nids_linkoffset);
      }
  #else
-     call_ip_frag_procs(data_aligned,hdr->caplen - nids_linkoffset);
+     call_ip_frag_procs(data_aligned,hdr->caplen - nids_linkoffset); // 调用分片层处理函数gen_ip_frag_proc
  #endif
 }
 
-static void gen_ip_frag_proc(u_char * data, int len)
+static void gen_ip_frag_proc(u_char * data, int len) // 传入的是ip层开始的数据
 {
     struct proc_node *i;
     struct ip *iph = (struct ip *) data;
@@ -368,28 +370,36 @@ static void gen_ip_frag_proc(u_char * data, int len)
     void (*glibc_syslog_h_workaround)(int, int, struct ip *, void*)=
         nids_params.syslog;
 
+    /*
+    ip_filter
+    IP filtering callback function, used to selectively discard IP packets, inspected after reassembly. 
+    If the function returns a non-zero value, the packet is processed; otherwise, it is discarded. 
+    Default value: nids_ip_filter (which always returns 1) 
+    */
     if (!nids_params.ip_filter(iph, len))
 	return;
 
+    // 首部和数据长度校验
     if (len < (int)sizeof(struct ip) || iph->ip_hl < 5 || iph->ip_v != 4 ||
 	ip_fast_csum((unsigned char *) iph, iph->ip_hl) != 0 ||
 	len < ntohs(iph->ip_len) || ntohs(iph->ip_len) < iph->ip_hl << 2) {
 	glibc_syslog_h_workaround(NIDS_WARN_IP, NIDS_WARN_IP_HDR, iph, 0);
 	return;
     }
+    // 选项校验
     if (iph->ip_hl > 5 && ip_options_compile((unsigned char *)data)) {
 	glibc_syslog_h_workaround(NIDS_WARN_IP, NIDS_WARN_IP_SRR, iph, 0);
 	return;
     }
     switch (ip_defrag_stub((struct ip *) data, &iph)) {
-    case IPF_ISF:
+    case IPF_ISF: // 分片，未重组完成
 	return;
-    case IPF_NOTF:
+    case IPF_NOTF: // 非分片
 	need_free = 0;
 	iph = (struct ip *) data;
 	break;
-    case IPF_NEW:
-	need_free = 1;
+    case IPF_NEW: // 重组完成
+	need_free = 1; // 新分配了空间保存重组之后的ip包，需要最后释放
 	break;
     default:;
     }
@@ -397,9 +407,9 @@ static void gen_ip_frag_proc(u_char * data, int len)
     if (!need_free)
 	skblen += nids_params.dev_addon;
     skblen = (skblen + 15) & ~15;
-    skblen += nids_params.sk_buff_size;
+    skblen += nids_params.sk_buff_size; // ??
 
-    for (i = ip_procs; i; i = i->next)
+    for (i = ip_procs; i; i = i->next)  // 调用ip层处理函数gen_ip_proc
 	(i->item) (iph, skblen);
     if (need_free)
 	free(iph);
@@ -414,7 +424,7 @@ static void gen_ip_frag_proc(u_char * data, int len)
 #define UH_SPORT source
 #define UH_DPORT dest
 #endif
-
+// 处理一个完整的ip包，并且负载是udp协议
 static void process_udp(char *data)
 {
     struct proc_node *ipp = udp_procs;
@@ -426,7 +436,7 @@ static void process_udp(char *data)
     int ulen;
     if (len - hlen < (int)sizeof(struct udphdr))
 	return;
-    udph = (struct udphdr *) (data + hlen);
+    udph = (struct udphdr *) (data + hlen); // 指向udp首部
     ulen = ntohs(udph->UH_ULEN);
     if (len - hlen < ulen || ulen < (int)sizeof(struct udphdr))
 	return;
@@ -438,7 +448,7 @@ static void process_udp(char *data)
     addr.dest = ntohs(udph->UH_DPORT);
     addr.saddr = iph->ip_src.s_addr;
     addr.daddr = iph->ip_dst.s_addr;
-    while (ipp) {
+    while (ipp) { // 调用udp处理函数
 	ipp->item(&addr, ((char *) udph) + sizeof(struct udphdr),
 		  ulen - sizeof(struct udphdr), data);
 	ipp = ipp->next;
@@ -447,13 +457,13 @@ static void process_udp(char *data)
 static void gen_ip_proc(u_char * data, int skblen)
 {
     switch (((struct ip *) data)->ip_p) {
-    case IPPROTO_TCP:
+    case IPPROTO_TCP: // 处理一个完整的ip包，并且负载是tcp协议
 	process_tcp(data, skblen);
 	break;
-    case IPPROTO_UDP:
+    case IPPROTO_UDP: // 处理一个完整的ip包，并且负载是udp协议
 	process_udp((char *)data);
 	break;
-    case IPPROTO_ICMP:
+    case IPPROTO_ICMP: // 处理一个完整的ip包，并且负载是icmp协议，只处理目的不可达的情况，用于清理tcp连接
 	if (nids_params.n_tcp_streams)
 	    process_icmp(data);
 	break;
@@ -461,6 +471,7 @@ static void gen_ip_proc(u_char * data, int skblen)
 	break;
     }
 }
+// 初始化ip_frag_procs(gen_ip_frag_proc)、ip_procs(gen_ip_proc)、tcp_procs、udp_procs
 static void init_procs()
 {
     ip_frag_procs = mknew(struct proc_node);
@@ -530,7 +541,7 @@ static int open_live()
 	return 0;
     }
 #endif
-    if (!raw_init()) {
+    if (!raw_init()) { // 尝试初始化libnet
 	nids_errbuf[0] = 0;
 	strncat(nids_errbuf, strerror(errno), sizeof(nids_errbuf) - 1);
 	return 0;
@@ -583,18 +594,26 @@ static void cap_queue_process_thread()
 int nids_init()
 {
     /* free resources that previous usages might have allocated */
-    nids_exit();
+    nids_exit(); // 释放资源，包括tcpstream和fragtable哈希表
 
+    // 打开网络接口
+    /*
+    pcap_desc
+    It this variable is set, libnids will call neither pcap_open_live nor pcap_open_offline, 
+    but will use a pre-opened PCAP descriptor; 
+    use this with nids_pcap_handler() in order to interactively feed packets to libnids. Default value: NULL
+    */
     if (nids_params.pcap_desc)
         desc = nids_params.pcap_desc;
     else if (nids_params.filename) {
 	if ((desc = pcap_open_offline(nids_params.filename,
 				      nids_errbuf)) == NULL)
 	    return 0;
-    } else if (!open_live())
+    } else if (!open_live()) // 调用pcap_open_live打开网络接口
 	return 0;
 
-    if (nids_params.pcap_filter != NULL) {
+    // 设置bpf
+    if (nids_params.pcap_filter != NULL) { // 设置pcap_filter
 	u_int mask = 0;
 	struct bpf_program fcode;
 
@@ -603,6 +622,8 @@ int nids_init()
 	if (pcap_setfilter(desc, &fcode) == -1)
 	    return 0;
     }
+
+    // 根据datalink，设置nids_linkoffset，即ip层之前数据链路层的长度
     switch ((linktype = pcap_datalink(desc))) {
 #ifdef DLT_IEEE802_11
 #ifdef DLT_PRISM_HEADER
@@ -653,18 +674,27 @@ int nids_init()
 	strcpy(nids_errbuf, "link type unknown");
 	return 0;
     }
+
+    // 设置dev_addon
+    // dev_addon
+    // Number of bytes in struct sk_buff reserved for link-layer information. 
+    // Default value: -1 (in which case an appropriate offset if determined automatically based on link-layer type) 
     if (nids_params.dev_addon == -1) {
 	if (linktype == DLT_EN10MB)
 	    nids_params.dev_addon = 16;
 	else
 	    nids_params.dev_addon = 0;
     }
+
+    // 设置syslog
     if (nids_params.syslog == nids_syslog)
 	openlog("libnids", 0, LOG_LOCAL0);
 
+    // 初始化ip_frag_procs(gen_ip_frag_proc)、ip_procs(gen_ip_proc)、tcp_procs、udp_procs
     init_procs();
+    // 初始化tcp_stream_table和streams_pool，以及init_hash、nids_tcp_timeouts
     tcp_init(nids_params.n_tcp_streams);
-    ip_frag_init(nids_params.n_hosts);
+    ip_frag_init(nids_params.n_hosts);  // 初始化fragtable
     scan_init();
 
     if(nids_params.multiproc) {
@@ -696,7 +726,7 @@ int nids_run()
 
 void nids_exit()
 {
-    if (!desc) {
+    if (!desc) { // 如果desc为空，则表明没有进行过初始化，直接返回
         strcpy(nids_errbuf, "Libnids not initialized");
 	return;
     }
@@ -709,17 +739,17 @@ void nids_exit()
         usleep(100000);
     }
 #endif
-    tcp_exit();
-    ip_frag_exit();
+    tcp_exit(); // 释放tcp_stream_table和streams_pool
+    ip_frag_exit(); // 释放fragtable
     scan_exit();
     strcpy(nids_errbuf, "loop: ");
     strncat(nids_errbuf, pcap_geterr(desc), sizeof nids_errbuf - 7);
     if (!nids_params.pcap_desc)
-        pcap_close(desc);
+        pcap_close(desc); // 关闭捕包接口
     desc = NULL;
 
-    free(ip_procs);
-    free(ip_frag_procs);
+    free(ip_procs); // 释放ip层处理函数节点
+    free(ip_frag_procs); // 释放ip分片层处理函数节点
 }
 
 int nids_getfd()

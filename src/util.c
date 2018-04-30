@@ -29,16 +29,16 @@ test_malloc(int x)
 
   return ret;
 }
-
+// 注册上层处理函数
 void
 register_callback(struct proc_node **procs, void (*x))
 {
   struct proc_node *ipp;
 
   for (ipp = *procs; ipp; ipp = ipp->next)
-    if (x == ipp->item)
+    if (x == ipp->item) // 已经注册过
       return;
-  ipp = mknew(struct proc_node);
+  ipp = mknew(struct proc_node); // 新建proc_node，插入头部
   ipp->item = x;
   ipp->next = *procs;
   *procs = ipp;
